@@ -1,0 +1,33 @@
+extern crate sha2;
+
+use std::{convert::TryInto, error::Error};
+
+use blake2::{Digest, Blake2b};
+
+use merkle_tree::MerkleTree;
+
+#[test]
+fn test() -> Result<(), Box<dyn Error>> {
+    let test_data: Vec<Vec<u8>> = vec![
+        vec![0x0; 2],
+        vec![0x0a; 5],
+        vec![0xa2; 2],
+        vec![0x1; 12],
+        vec![0xfe; 27],
+    ];
+
+    let merkle_tree = MerkleTree::new(&test_data);
+
+    let hash = merkle_tree::hash(&[0x0a; 5]);
+
+    println!("{}", hash.len());
+
+    let merkle_proof = merkle_tree
+        .get_proof(hash.try_into().unwrap())
+        .ok_or("Couldn't get merkle proof")?;
+
+    assert!(merkle_proof.is_proof(&merkle_tree.root));
+    assert!(!merkle_proof.is_proof(&[0u8; 28]));
+
+    Ok(())
+}

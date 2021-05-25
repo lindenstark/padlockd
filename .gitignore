@@ -1,0 +1,8 @@
+target
+Cargo.lock
+padlock-blockchain/target
+padlock-blockchain/Cargo.lock
+padlock-blockchain/add_many_blocks_test/
+padlock-blockchain/add_one_block_test/
+padlock-blockchain/block_reorganization_test/
+

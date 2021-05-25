@@ -1,0 +1,19 @@
+[package]
+name = "padlock-blockchain"
+version = "0.1.0"
+authors = ["Fronkles McFranko <mrelfranko@disroot.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bls-signatures = "0.9.0"
+randomx-bindings = "^0.1"
+blake2 = "^0.9"
+merkle_tree = { path = "merkle_tree", features = ["serde_support"] }
+serde = "^1.0"
+rmp-serde = "^0.15"
+rocksdb = "^0.16"
+
+[dev-dependencies]
+rand = "^0.7"
