@@ -1,5 +1,3 @@
-extern crate sha2;
-
 #[cfg(feature = "serde_support")]
 extern crate serde;
 
@@ -16,7 +14,7 @@ pub use merkle_proof::MerkleProof;
 
 /// Creates a merkle tree based on some data represented as bytes in a Vec<u8> form.
 ///
-/// It uses Sha256 truncated to 224 bits for it's hash function.
+/// It uses Blake2b with a length of 28 bytes for it's hashing function.
 ///
 /// If a layer in the merkle tree has an uneven amount of nodes, the last node in the layer will be
 /// cloned into the next layer. For example:

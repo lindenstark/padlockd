@@ -11,6 +11,5 @@ serde_support = ["serde"]
 
 
 [dependencies]
-sha2 = "0.9.5"
 blake2 = "^0.9"
 serde = { version = "1.0.118", optional = true, features = ["derive"] }
