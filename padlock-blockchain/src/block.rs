@@ -318,6 +318,7 @@ impl BlockHeader {
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
 pub struct Entry {
     pub coinfile_hashes: Vec<[u8; 8]>,
+    pub output_hash: [u8; 8],
     pub public_key: Option<Vec<u8>>, // serde can't support arrays past 32, so a vec is used instead
     pub public_key_index: Option<u64>,
     pub proof_of_work: Vec<u8>,
@@ -326,12 +327,14 @@ pub struct Entry {
 impl Entry {
     pub fn new(
         coinfile_hashes: Vec<[u8; 8]>,
+        output_hash: [u8; 8],
         public_key: Option<Vec<u8>>,
         public_key_index: Option<u64>,
         proof_of_work: Vec<u8>,
     ) -> Self {
         Self {
             coinfile_hashes,
+            output_hash,
             public_key,
             public_key_index,
             proof_of_work,
@@ -372,6 +375,7 @@ impl Entry {
         let mut bytes: Vec<u8> = Vec::new();
         bytes.append(&mut coinfile_hashes_len.to_le_bytes().to_vec());
         bytes.append(&mut coinfile_hashes_bytes.to_vec());
+        bytes.append(&mut self.output_hash.to_vec());
         bytes.append(&mut is_public_key_index.to_le_bytes().to_vec());
         bytes.append(&mut public_key);
         bytes.append(&mut proof_of_work_len.to_le_bytes().to_vec());
@@ -389,6 +393,9 @@ impl Entry {
             let coinfile_hash: Vec<u8> = (&mut bytes).take(8).collect();
             coinfile_hashes.push(coinfile_hash.try_into().unwrap());
         }
+
+        let output_hash: Vec<u8> = (&mut bytes).take(8).collect();
+        let output_hash: [u8; 8] = output_hash.try_into().unwrap();
 
         let is_public_key_index = bytes.next().unwrap().to_owned();
         let mut public_key = None;
@@ -410,6 +417,7 @@ impl Entry {
 
         Ok(Self {
             coinfile_hashes,
+            output_hash,
             public_key,
             public_key_index,
             proof_of_work,
@@ -445,6 +453,7 @@ impl Default for Entry {
     fn default() -> Self {
         Self {
             coinfile_hashes: vec![[0u8; 8]],
+            output_hash: [0u8; 8],
             public_key: Some(vec![4u8; 48]),
             public_key_index: None,
             proof_of_work: vec![2u8; 4],

@@ -1,8 +1,4 @@
-extern crate sha2;
-
 use std::{convert::TryInto, error::Error};
-
-use blake2::{Digest, Blake2b};
 
 use merkle_tree::MerkleTree;
 
