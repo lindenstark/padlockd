@@ -5,7 +5,7 @@ use crate::randomx_bindings::{
 use blake2::{Blake2b, Digest};
 use bls_signatures::{PublicKey, Serialize, Signature};
 use merkle_tree::MerkleTree;
-use rocksdb::DB;
+use rocks::prelude::*;
 
 use crate::KeyType;
 
@@ -151,7 +151,7 @@ impl Block {
 
     /// Collects every public key and message, then checks it against the aggregated signature of
     /// the block. Needs access to the databse in order to retrieve public keys from indexes.
-    pub fn check_signature(&self, db: &DB) -> Result<(), BlockError> {
+    pub fn check_signature(&self, db: &rocks::db::DB) -> Result<(), BlockError> {
         // Get every public key from each entry
         let mut public_keys: Vec<PublicKey> = Vec::new();
         let mut messages: Vec<Vec<u8>> = Vec::new();
@@ -169,13 +169,16 @@ impl Block {
                 let key =
                     KeyType::make_key(KeyType::PublicKey, &public_key_index);
 
-                let public_key_bytes = db.get(&key)?.ok_or(
-                    BlockError::new(BlockErrorKind::NoPublicKeyFound),
-                )?;
-
-                let public_key = PublicKey::from_bytes(&public_key_bytes)?;
-                public_keys.push(public_key);
-
+                match db.get(ReadOptions::default_instance(), &key) {
+					Ok(public_key_bytes) => {
+		                let public_key = PublicKey::from_bytes(&public_key_bytes)?;
+		              	public_keys.push(public_key);
+					}
+					
+                	Err(_) => {
+                		return Err(BlockError::new(BlockErrorKind::NoPublicKeyFound));
+                	}
+                }
             } else {
                 return Err(BlockError::new(
                     BlockErrorKind::NoPublicKeyFound
@@ -543,8 +546,8 @@ impl From<RandomxError> for BlockError {
     }
 }
 
-impl From<rocksdb::Error> for BlockError {
-    fn from(error: rocksdb::Error) -> Self {
+impl From<rocks::error::Error> for BlockError {
+    fn from(error: rocks::error::Error) -> Self {
         BlockError::from_source(Box::new(error))
     }
 }

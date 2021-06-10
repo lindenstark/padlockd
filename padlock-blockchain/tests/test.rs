@@ -187,6 +187,7 @@ fn make_entry() -> Result<MempoolEntry, Box<dyn Error>> {
 
     let mut entry = Entry::new(
         vec![coinfile_hash],
+		[0; 8],
         Some(public_key.as_bytes()),
         None,
         vec![0],

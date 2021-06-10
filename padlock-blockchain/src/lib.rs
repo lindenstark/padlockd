@@ -6,8 +6,8 @@ extern crate rmp_serde;
 extern crate serde;
 use serde::{Deserialize, Serialize};
 
-extern crate rocksdb;
-use rocksdb::DB;
+extern crate rocks;
+use rocks::prelude::*;
 
 pub mod block;
 use block::{Block, BlockHeader};
@@ -22,22 +22,24 @@ const PREVIOUS_BLOCKS_TO_CONSIDER: usize = 750;
 pub struct Blockchain {
     pub db_dir: String,
     pub info: BlockchainInfo,
-    pub db: DB,
+    pub db: rocks::db::DB,
 }
 
 impl Blockchain {
     pub fn new(db_dir: &str) -> Result<Self, Box<dyn Error>> {
-        let db = DB::open_default(&db_dir)?;
+		let options = Options::default().map_db_options(|db_opt| db_opt.create_if_missing(true));
+		let db = DB::open(options, &db_dir)?;
 
-        let info = match db.get(b"blockchain_info")? {
-            Some(blockchain_info_bytes) => {
-                rmp_serde::from_slice(&blockchain_info_bytes)?
+        let info = match db.get(ReadOptions::default_instance(), b"blockchain_info") {
+            Ok(blockchain_info_bytes) => {
+				rmp_serde::from_slice(&blockchain_info_bytes)?
             }
-            None => {
+            Err(_) => {
                 let blockchain_info = BlockchainInfo::default();
                 db.put(
+					WriteOptions::default_instance(),
                     b"blockchain_info",
-                    rmp_serde::to_vec(&blockchain_info)?,
+                    &rmp_serde::to_vec(&blockchain_info)?,
                 )?;
                 blockchain_info
             }
@@ -51,11 +53,18 @@ impl Blockchain {
     }
 
     pub fn get_block(&self, hash: &[u8]) -> Result<Block, BlockchainError> {
-        let block_bytes = self.db.get(hash)?.ok_or(BlockchainError::new(
-            BlockchainErrorKind::BlockDoesntExist,
-        ))?;
-        let block = Block::from_bytes(&block_bytes)?;
-        Ok(block)
+		match self.db.get(ReadOptions::default_instance(), hash) {
+			Ok(block_bytes) => {
+				let block = Block::from_bytes(&block_bytes)?;
+		       	Ok(block)
+			}
+			
+			Err(_) => {
+				Err(BlockchainError::new(
+           		 BlockchainErrorKind::BlockDoesntExist,
+       	 		))
+			}
+		}
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), BlockchainError> {
@@ -146,7 +155,7 @@ impl Blockchain {
         self.info.is_empty = false;
 
         let key = KeyType::make_key(KeyType::Block, &block.hash);
-        self.db.put(key, block_bytes)?;
+        self.db.put(WriteOptions::default_instance(), &key, &block_bytes)?;
 
         self.add_block_hash(&block)?;
         self.add_block_header(&block)?;
@@ -170,7 +179,7 @@ impl Blockchain {
         self.info.height -= 1;
 
         let key = KeyType::make_key(KeyType::Block, &block_hash);
-        self.db.delete(&key)?;
+        self.db.delete(WriteOptions::default_instance(), &key)?;
 
         self.update_median_timestamp()?;
         self.update_difficulty()?;
@@ -187,7 +196,7 @@ impl Blockchain {
             KeyType::BlockHeight,
             &block.header.height.to_le_bytes(),
         );
-        self.db.put(key, block.hash)?;
+        self.db.put(WriteOptions::default_instance(), &key, &block.hash)?;
         Ok(())
     }
 
@@ -199,16 +208,21 @@ impl Blockchain {
         let key =
             KeyType::make_key(KeyType::BlockHeight, &height.to_le_bytes());
 
-        let hash = self.db.get(key)?.ok_or(BlockchainError::new(
-            BlockchainErrorKind::CantFindHashFromHeight,
-        ))?;
-        Ok(hash)
+		match self.db.get(ReadOptions::default_instance(), &key) {
+			Ok(hash) => {
+				Ok((&hash).to_vec())
+			}
+			
+			Err(_) => {
+				Err(BlockchainError::new(BlockchainErrorKind::CantFindHashFromHeight))
+			}
+		}
     }
 
     fn del_block_hash(&self, height: usize) -> Result<(), BlockchainError> {
         let key =
             KeyType::make_key(KeyType::BlockHeight, &height.to_le_bytes());
-        self.db.delete(key)?;
+        self.db.delete(WriteOptions::default_instance(), &key)?;
 
         Ok(())
     }
@@ -218,27 +232,30 @@ impl Blockchain {
         hash: &[u8],
     ) -> Result<BlockHeader, BlockchainError> {
         let key = KeyType::make_key(KeyType::BlockHeader, hash);
-        let header_bytes = self.db.get(key)?.ok_or(BlockchainError::new(
-            BlockchainErrorKind::BlockHeaderDoesntExist,
-        ))?;
+        
+		if let Ok(header_bytes) = &self.db.get(ReadOptions::default_instance(), &key) {
+			let header = rmp_serde::from_slice(&header_bytes)?;
 
-        let header = rmp_serde::from_slice(&header_bytes)?;
-
-        Ok(header)
+	       	 Ok(header)
+		} else {
+			Err(BlockchainError::new(
+				BlockchainErrorKind::BlockHeaderDoesntExist,
+			))
+		}
     }
 
     fn add_block_header(&self, block: &Block) -> Result<(), BlockchainError> {
         let key = KeyType::make_key(KeyType::BlockHeader, &block.hash);
         let header_bytes = rmp_serde::to_vec(&block.header)?;
 
-        self.db.put(key, &header_bytes)?;
+        self.db.put(WriteOptions::default_instance(), &key, &header_bytes)?;
 
         Ok(())
     }
 
     fn del_block_header(&self, hash: &[u8]) -> Result<(), BlockchainError> {
         let key = KeyType::make_key(KeyType::BlockHeader, &hash);
-        self.db.delete(key)?;
+        self.db.delete(WriteOptions::default_instance(), &key)?;
 
         Ok(())
     }
@@ -451,8 +468,8 @@ impl fmt::Display for BlockchainError {
     }
 }
 
-impl From<rocksdb::Error> for BlockchainError {
-    fn from(error: rocksdb::Error) -> Self {
+impl From<rocks::error::Error> for BlockchainError {
+    fn from(error: rocks::error::Error) -> Self {
         BlockchainError::from_source(Box::new(error))
     }
 }
