@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 bls-signatures = "0.9.0"
-randomx-bindings = "^0.1"
+randomx-bindings = "0.1.4"
 blake2 = "^0.9"
 merkle_tree = { path = "merkle_tree", features = ["serde_support"] }
 serde = "^1.0"

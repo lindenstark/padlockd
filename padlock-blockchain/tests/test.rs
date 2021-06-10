@@ -13,7 +13,7 @@ use randomx_bindings::{RandomxDataset, RandomxFlags, RandomxVm};
 // 3 blocks should be the minimum testing amount. If it is less than that, there is no difficulty
 // adjustment
 const TEST_BLOCKS_TO_MINE: usize = 10000;
-const START_DIFFICULTY: f32 = 64f32;
+const START_DIFFICULTY: f32 = 2048f32;
 
 #[test]
 fn add_one_block() -> Result<(), Box<dyn Error>> {
@@ -32,7 +32,6 @@ fn add_many_blocks() -> Result<(), Box<dyn Error>> {
 
     for _ in 0..TEST_BLOCKS_TO_MINE {
         let block = mine_block(&blockchain)?;
-
 
         blockchain.add_block(block)?;
 
@@ -187,6 +186,7 @@ fn make_entry() -> Result<MempoolEntry, Box<dyn Error>> {
 
     let mut entry = Entry::new(
         vec![coinfile_hash],
+        [0u8; 8],
         Some(public_key.as_bytes()),
         None,
         vec![0],

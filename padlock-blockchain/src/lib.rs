@@ -359,7 +359,7 @@ impl Blockchain {
             (average_difficulty * 0.05) / average_entry_difficulty;
 
         self.info.max_allowed_entry_difficulty =
-            average_entry_difficulty * 2f32;
+            average_entry_difficulty * 1.5;
 
         Ok(())
     }
