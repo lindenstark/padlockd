@@ -19,13 +19,14 @@ use block::{Block, BlockHeader};
 
 use std::{convert::TryInto, error::Error, fmt, time::SystemTime};
 
+/// Interval between blocks in seconds
 const BLOCK_TIME: f32 = 120f32;
 
 /// The amount of blocks to consider when getting averages, such as average difficulty
 const PREVIOUS_BLOCKS_TO_CONSIDER: usize = 750;
 
 /// How long (in blocks) a randomx vm key is kept before it is changed.
-pub const RANDOMX_VM_KEY_LIFETIME: usize = 5;
+pub const RANDOMX_VM_KEY_LIFETIME: usize = 10000;
 
 lazy_static! {
     pub static ref RANDOMX_FLAGS: RandomxFlags = RandomxFlags::default();

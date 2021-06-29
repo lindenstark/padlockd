@@ -135,12 +135,12 @@ fn find_nonce(
 
     let vm = RandomxVm::new(*RANDOMX_FLAGS, &randomx_cache)?;
 
-    let mut nonce = Nonce::new();
+    let mut nonce = 0u128;
 
     let complete_hash: [u8; 32];
 
     loop {
-        header.nonce = nonce.0.clone();
+        header.nonce = nonce.to_le_bytes().into();
         let hash = vm.hash(&header.concat());
 
         let leading_zeros = {
@@ -159,10 +159,10 @@ fn find_nonce(
             break;
         }
 
-        nonce.increment();
+        nonce += 1;
     }
 
-    Ok((nonce.0, complete_hash))
+    Ok((nonce.to_le_bytes().into(), complete_hash))
 }
 
 struct Nonce(Vec<u8>);
