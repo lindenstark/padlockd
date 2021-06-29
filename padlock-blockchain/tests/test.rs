@@ -1,37 +1,38 @@
 use std::{error::Error, fs, time::SystemTime};
 
-use padlock_blockchain::block::Block;
-use padlock_blockchain::block::BlockHeader;
-use padlock_blockchain::block::Entry;
-use padlock_blockchain::block::MempoolEntry;
-use padlock_blockchain::Blockchain;
+use padlock_blockchain::{
+    block::{Block, BlockHeader, Entry, MempoolEntry},
+    Blockchain,
+    RANDOMX_FLAGS
+};
 
+use hex_fmt::HexFmt;
 use bls_signatures::{PrivateKey, Serialize};
 use rand::{rngs::OsRng, RngCore};
-use randomx_bindings::{RandomxDataset, RandomxFlags, RandomxVm};
+use randomx_bindings::{RandomxCache, RandomxVm};
 
 // 3 blocks should be the minimum testing amount. If it is less than that, there is no difficulty
 // adjustment
 const TEST_BLOCKS_TO_MINE: usize = 10000;
-const START_DIFFICULTY: f32 = 2048f32;
+const START_DIFFICULTY: f32 = 1024f32;
 
 #[test]
 fn add_one_block() -> Result<(), Box<dyn Error>> {
     let mut blockchain = make_blockchain("./add_one_block_test")?;
 
-    blockchain.add_block(mine_block(&blockchain)?)?;
+    blockchain.add_block(mine_block(&blockchain, &blockchain.randomx_cache)?)?;
 
     fs::remove_dir_all("./add_one_block_test")?;
     Ok(())
 }
 
-/// Creates blocks, mines them, then adds them to the blockchain. 
+/// Creates blocks, mines them, then adds them to the blockchain.
 #[test]
 fn add_many_blocks() -> Result<(), Box<dyn Error>> {
     let mut blockchain = make_blockchain("./add_many_blocks_test")?;
 
     for _ in 0..TEST_BLOCKS_TO_MINE {
-        let block = mine_block(&blockchain)?;
+        let block = mine_block(&blockchain, &blockchain.randomx_cache)?;
 
         blockchain.add_block(block)?;
 
@@ -50,7 +51,7 @@ fn block_reorganization() -> Result<(), Box<dyn Error>> {
     let mut blockchain = make_blockchain("./block_reorganization_test")?;
 
     for _ in 0..TEST_BLOCKS_TO_MINE {
-        blockchain.add_block(mine_block(&blockchain)?)?;
+        blockchain.add_block(mine_block(&blockchain, &blockchain.randomx_cache)?)?;
 
         blockchain.info.network_adjusted_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -59,7 +60,7 @@ fn block_reorganization() -> Result<(), Box<dyn Error>> {
     }
 
     let old_blockchain_info = blockchain.info.clone();
-    blockchain.add_block(mine_block(&blockchain)?)?;
+    blockchain.add_block(mine_block(&blockchain, &blockchain.randomx_cache)?)?;
 
     println!("deleting top block");
     blockchain.del_top_block()?;
@@ -67,6 +68,15 @@ fn block_reorganization() -> Result<(), Box<dyn Error>> {
     assert!(blockchain.info == old_blockchain_info);
 
     fs::remove_dir_all("./block_reorganization_test")?;
+    Ok(())
+}
+
+#[test]
+fn construct_blockchain() -> Result<(), Box<dyn Error>> {
+    let _ = fs::remove_dir_all("construct_blockchain_test");
+
+    let _blockchain = Blockchain::new("construct_blockchain_test")?;
+
     Ok(())
 }
 
@@ -82,57 +92,56 @@ fn make_blockchain(dir: &str) -> Result<Blockchain, Box<dyn Error>> {
     Ok(blockchain)
 }
 
-/// This is a very inefficient, and single threaded miner, this is used purely for testing
-fn mine_block(blockchain: &Blockchain) -> Result<Block, Box<dyn Error>> {
-    let mut block = Block::new(
-        blockchain.info.top_block_hash,
-        blockchain.info.height + 1,
-        vec![make_entry()?, make_entry()?],
-        vec![0u8],
+/// This is a very inefficient, and single threaded miner, this is used purely for testing. 
+fn mine_block(
+    blockchain: &Blockchain,
+    randomx_cache: &RandomxCache,
+) -> Result<Block, Box<dyn Error>> {
+    let mut block = Block::new_with_hash(
+        blockchain.info.top_block_hash, // previous_hash
+        blockchain.info.height + 1,     // height
+        vec![make_entry()?, make_entry()?], // mempool_entries
+        vec![0u8],                      // nonce
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs(),
-        blockchain.info.difficulty,
-        blockchain.info.entry_difficulty_multiplier,
-        blockchain.info.max_allowed_entry_difficulty,
-        [0u8; 32],
+            .as_secs(), // timestamp
+        blockchain.info.difficulty,     // entry_difficulty
+        blockchain.info.entry_difficulty_multiplier, // entry_difficulty_multiplier
+        blockchain.info.max_allowed_entry_difficulty, // max_allowed_entry_difficulty
+        [0u8; 32],                                    // miner_address
+        [0u8; 32],                                    // hash
     )?;
 
-    let difficulty_target =
-            blockchain.info.difficulty
-            - block.entry_difficulty()?
-            * block.header.entry_difficulty_multiplier;
+    let difficulty_target = blockchain.info.difficulty
+        - block.entry_difficulty()? * block.header.entry_difficulty_multiplier;
 
-    let (randomx_input, block_hash) =
-        find_randomx_input(&block.header, difficulty_target)?;
+    let (nonce, block_hash) =
+        find_nonce(&block.header, difficulty_target, randomx_cache)?;
 
-    block.randomx_input = randomx_input;
+    block.header.nonce = nonce;
     block.hash = block_hash;
 
-    println!("{:#?} \n {:x?}", &block.header, &block.hash);
+    println!("{:#?} \nblock hash: {}", &block.header, HexFmt(block.hash));
 
     Ok(block)
 }
 
-fn find_randomx_input(
+fn find_nonce(
     header: &BlockHeader,
     difficulty: f32,
+    randomx_cache: &RandomxCache,
 ) -> Result<(Vec<u8>, [u8; 32]), Box<dyn Error>> {
-    let header = header.clone();
-    let key = header.concat();
+    let mut header = header.clone();
 
-    let flags = RandomxFlags::default() | RandomxFlags::FULLMEM;
-
-    const THREADS: u8 = 8;
-    let dataset = RandomxDataset::new(flags, &key, THREADS)?;
-    let vm = RandomxVm::new_fast(flags, &dataset)?;
+    let vm = RandomxVm::new(*RANDOMX_FLAGS, &randomx_cache)?;
 
     let mut nonce = Nonce::new();
 
     let complete_hash: [u8; 32];
 
     loop {
-        let hash = vm.hash(&nonce.0);
+        header.nonce = nonce.0.clone();
+        let hash = vm.hash(&header.concat());
 
         let leading_zeros = {
             let mut leading_zeros = 0;
@@ -142,13 +151,14 @@ fn find_randomx_input(
                     break;
                 }
             }
-            leading_zeros as usize
+            leading_zeros
         };
 
-        if 2usize.pow(leading_zeros as u32) >= difficulty as usize {
+        if 2usize.pow(leading_zeros) >= difficulty as usize + 1 {
             complete_hash = hash;
             break;
         }
+
         nonce.increment();
     }
 
@@ -162,6 +172,7 @@ impl Nonce {
         Nonce(vec![0])
     }
 
+    // Incrementing isn't actually adding 1 to it, but it does the job needed for the test.
     fn increment(&mut self) {
         for byte in self.0.iter_mut() {
             if byte < &mut 255 {
@@ -196,7 +207,7 @@ fn make_entry() -> Result<MempoolEntry, Box<dyn Error>> {
 
     loop {
         entry.proof_of_work = nonce.0.clone();
-        if entry.difficulty().unwrap() > 4096 {
+        if entry.difficulty().unwrap() > 64 {
             break;
         }
         nonce.increment();

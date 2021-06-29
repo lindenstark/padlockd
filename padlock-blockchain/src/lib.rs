@@ -1,7 +1,12 @@
 extern crate bls_signatures;
 extern crate merkle_tree;
-extern crate randomx_bindings;
 extern crate rmp_serde;
+
+extern crate lazy_static;
+use lazy_static::lazy_static;
+
+extern crate randomx_bindings;
+use randomx_bindings::{RandomxCache, RandomxError, RandomxFlags};
 
 extern crate serde;
 use serde::{Deserialize, Serialize};
@@ -12,17 +17,25 @@ use rocksdb::DB;
 pub mod block;
 use block::{Block, BlockHeader};
 
-use std::{error::Error, fmt, time::SystemTime};
+use std::{convert::TryInto, error::Error, fmt, time::SystemTime};
 
-const BLOCK_TIME: f32 = 90f32; // target interval between blocks in seconds
+const BLOCK_TIME: f32 = 120f32;
 
-// The amount of blocks to consider when getting averages, such as average difficulty
+/// The amount of blocks to consider when getting averages, such as average difficulty
 const PREVIOUS_BLOCKS_TO_CONSIDER: usize = 750;
+
+/// How long (in blocks) a randomx vm key is kept before it is changed.
+pub const RANDOMX_VM_KEY_LIFETIME: usize = 5;
+
+lazy_static! {
+    pub static ref RANDOMX_FLAGS: RandomxFlags = RandomxFlags::default();
+}
 
 pub struct Blockchain {
     pub db_dir: String,
     pub info: BlockchainInfo,
     pub db: DB,
+    pub randomx_cache: RandomxCache,
 }
 
 impl Blockchain {
@@ -43,10 +56,15 @@ impl Blockchain {
             }
         };
 
+        let randomx_vm_key = [0u8; 32];
+        let randomx_flags = RandomxFlags::default();
+        let randomx_cache = RandomxCache::new(randomx_flags, &randomx_vm_key)?;
+
         Ok(Blockchain {
             db_dir: String::from(db_dir),
             info,
             db,
+            randomx_cache,
         })
     }
 
@@ -132,12 +150,11 @@ impl Blockchain {
             return Err(BlockchainError::new(BlockchainErrorKind::BlockTooBig));
         }
 
-        if block.check_signature(&self.db).is_err() {
-            return Err(BlockchainError::new(BlockchainErrorKind::InvalidSignature))
-        }
+        block.check_signature(&self.db)?;
 
-        let calculated_hash = block.calc_hash()?;
+        let calculated_hash = block.calc_hash(&self.randomx_cache)?;
         if calculated_hash != block.hash {
+            println!("{:#x?} {:#x?}", calculated_hash, block.hash);
             return Err(BlockchainError::new(BlockchainErrorKind::InvalidHash));
         }
 
@@ -155,6 +172,12 @@ impl Blockchain {
         self.update_difficulty()?;
         self.update_entry_difficulty_limits()?;
 
+        if self.info.height % RANDOMX_VM_KEY_LIFETIME == 0 {
+            self.info.randomx_vm_key = self.info.top_block_hash;
+            self.randomx_cache =
+                RandomxCache::new(*RANDOMX_FLAGS, &self.info.randomx_vm_key)?;
+        }
+
         Ok(())
     }
 
@@ -171,6 +194,17 @@ impl Blockchain {
 
         let key = KeyType::make_key(KeyType::Block, &block_hash);
         self.db.delete(&key)?;
+
+        if block_header.height % RANDOMX_VM_KEY_LIFETIME == 0 {
+            if block_header.height - RANDOMX_VM_KEY_LIFETIME > 0 {
+                let old_block_hash = self.get_block_hash(
+                    block_header.height - RANDOMX_VM_KEY_LIFETIME,
+                )?;
+                self.info.randomx_vm_key = old_block_hash.try_into().unwrap();
+            } else {
+                self.info.randomx_vm_key = [0u8; 32];
+            }
+        }
 
         self.update_median_timestamp()?;
         self.update_difficulty()?;
@@ -288,7 +322,8 @@ impl Blockchain {
             return Ok(());
         }
 
-        let block_headers = self.get_previous_n_block_headers(PREVIOUS_BLOCKS_TO_CONSIDER)?;
+        let block_headers =
+            self.get_previous_n_block_headers(PREVIOUS_BLOCKS_TO_CONSIDER)?;
 
         let average_difficulty = {
             let mut total = 0u128;
@@ -299,8 +334,6 @@ impl Blockchain {
 
             total as f32 / block_headers.len() as f32
         };
-
-        println!("average difficulty: {}", average_difficulty);
 
         let average_block_time = {
             let mut total = 0i128;
@@ -315,13 +348,14 @@ impl Blockchain {
             total as f32 / block_headers.len() as f32
         };
 
-        println!("average block time: {}", average_block_time);
-
         let network_hash_rate = average_difficulty / average_block_time;
 
-        println!("network hash rate: {}", network_hash_rate);
-
         self.info.difficulty = network_hash_rate * BLOCK_TIME;
+
+        println!("average difficulty: {}", average_difficulty);
+        println!("average block time: {}", average_block_time);
+        println!("network hash rate: {}", network_hash_rate);
+        println!("new difficulty target: {}", self.info.difficulty);
 
         Ok(())
     }
@@ -333,7 +367,8 @@ impl Blockchain {
             return Ok(());
         }
 
-        let block_headers = self.get_previous_n_block_headers(PREVIOUS_BLOCKS_TO_CONSIDER)?;
+        let block_headers =
+            self.get_previous_n_block_headers(PREVIOUS_BLOCKS_TO_CONSIDER)?;
 
         let average_difficulty = {
             let mut total = 0u128;
@@ -358,8 +393,7 @@ impl Blockchain {
         self.info.entry_difficulty_multiplier =
             (average_difficulty * 0.05) / average_entry_difficulty;
 
-        self.info.max_allowed_entry_difficulty =
-            average_entry_difficulty * 1.5;
+        self.info.max_allowed_entry_difficulty = average_entry_difficulty * 1.5;
 
         Ok(())
     }
@@ -373,6 +407,7 @@ pub struct BlockchainInfo {
     pub past_median_timestamp: u64,
     pub network_adjusted_time: u64,
     pub difficulty: f32,
+    pub randomx_vm_key: [u8; 32],
     pub entry_difficulty_multiplier: f32,
     pub max_allowed_entry_difficulty: f32,
     pub block_size_cap: usize,
@@ -390,6 +425,7 @@ impl Default for BlockchainInfo {
                 .unwrap()
                 .as_secs(),
             difficulty: 256f32,
+            randomx_vm_key: [0u8; 32],
             entry_difficulty_multiplier: 0.005,
             max_allowed_entry_difficulty: 4096f32,
             block_size_cap: 250000,
@@ -475,6 +511,12 @@ impl From<block::BlockError> for BlockchainError {
     }
 }
 
+impl From<RandomxError> for BlockchainError {
+    fn from(error: RandomxError) -> Self {
+        BlockchainError::from_source(Box::new(error))
+    }
+}
+
 #[derive(Debug)]
 enum BlockchainErrorKind {
     BlockDoesntExist,
@@ -493,6 +535,5 @@ enum BlockchainErrorKind {
     BlockHeaderDoesntExist,
     BlockEntryDifficultyWrong,
     BlockMaxAllowedEntryDifficultyWrong,
-    InvalidSignature,
     Other,
 }

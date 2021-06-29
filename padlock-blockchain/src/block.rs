@@ -1,13 +1,11 @@
-use crate::randomx_bindings::{
-    RandomxCache, RandomxError, RandomxFlags, RandomxVm,
-};
+use crate::randomx_bindings::{RandomxCache, RandomxError, RandomxVm};
 
 use blake2::{Blake2b, Digest};
 use bls_signatures::{PublicKey, Serialize, Signature};
 use merkle_tree::MerkleTree;
 use rocksdb::DB;
 
-use crate::KeyType;
+use crate::{KeyType, RANDOMX_FLAGS};
 
 use std::{convert::TryInto, error::Error, fmt};
 
@@ -15,7 +13,6 @@ use std::{convert::TryInto, error::Error, fmt};
 pub struct Block {
     pub entries: Vec<Entry>,
     pub header: BlockHeader,
-    pub randomx_input: Vec<u8>,
     pub hash: [u8; 32],
 }
 
@@ -24,12 +21,13 @@ impl Block {
         previous_hash: [u8; 32],
         height: usize,
         mempool_entries: Vec<MempoolEntry>,
-        randomx_input: Vec<u8>,
+        nonce: Vec<u8>,
         timestamp: u64,
         difficulty_target: f32,
         entry_difficulty_multiplier: f32,
         max_allowed_entry_difficulty: f32,
         miner_address: [u8; 32],
+        randomx_cache: &RandomxCache,
     ) -> Result<Self, BlockError> {
         let mut signatures: Vec<Signature> = Vec::new();
         let mut entries: Vec<Entry> = Vec::new();
@@ -46,13 +44,14 @@ impl Block {
             previous_hash,
             height,
             entries,
-            randomx_input,
+            nonce,
             timestamp,
             difficulty_target,
             entry_difficulty_multiplier,
             max_allowed_entry_difficulty,
             miner_address,
             signature,
+            randomx_cache,
         )?;
 
         Ok(block)
@@ -62,13 +61,14 @@ impl Block {
         previous_hash: [u8; 32],
         height: usize,
         entries: Vec<Entry>,
-        randomx_input: Vec<u8>,
+        nonce: Vec<u8>,
         timestamp: u64,
         difficulty_target: f32,
         entry_difficulty_multiplier: f32,
         max_allowed_entry_difficulty: f32,
         miner_address: [u8; 32],
         signature: Vec<u8>,
+        randomx_cache: &RandomxCache,
     ) -> Result<Self, BlockError> {
         let merkle_tree = MerkleTree::new(&entries);
         let merkle_root = merkle_tree.root;
@@ -84,21 +84,100 @@ impl Block {
             max_allowed_entry_difficulty,
             miner_address,
             signature,
+            nonce,
         );
 
-        let flags = RandomxFlags::default();
-        let cache = RandomxCache::new(flags, &header.concat())?;
-        let vm = RandomxVm::new(flags, &cache)?;
-        let hash = vm.hash(&randomx_input);
+        let vm = RandomxVm::new(*RANDOMX_FLAGS, &randomx_cache)?;
+        let hash = vm.hash(&header.concat());
 
         let mut block = Block {
             entries,
             header,
-            randomx_input,
             hash,
         };
 
         block.header.entry_difficulty = block.entry_difficulty()?;
+
+        Ok(block)
+    }
+
+    pub fn new_with_hash_and_signature(
+        previous_hash: [u8; 32],
+        height: usize,
+        entries: Vec<Entry>,
+        nonce: Vec<u8>,
+        timestamp: u64,
+        difficulty_target: f32,
+        entry_difficulty_multiplier: f32,
+        max_allowed_entry_difficulty: f32,
+        miner_address: [u8; 32],
+        signature: Vec<u8>,
+        hash: [u8; 32],
+    ) -> Result<Self, BlockError> {
+        let merkle_tree = MerkleTree::new(&entries);
+        let merkle_root = merkle_tree.root;
+
+        let header = BlockHeader::new(
+            previous_hash,
+            height,
+            merkle_root,
+            timestamp,
+            difficulty_target,
+            0f32, // entry difficulty
+            entry_difficulty_multiplier,
+            max_allowed_entry_difficulty,
+            miner_address,
+            signature,
+            nonce,
+        );
+
+        let mut block = Block {
+            entries,
+            header,
+            hash,
+        };
+
+        block.header.entry_difficulty = block.entry_difficulty()?;
+
+        Ok(block)
+    }
+
+    pub fn new_with_hash(
+        previous_hash: [u8; 32],
+        height: usize,
+        mempool_entries: Vec<MempoolEntry>,
+        nonce: Vec<u8>,
+        timestamp: u64,
+        difficulty_target: f32,
+        entry_difficulty_multiplier: f32,
+        max_allowed_entry_difficulty: f32,
+        miner_address: [u8; 32],
+        hash: [u8; 32],
+    ) -> Result<Self, BlockError> {
+        let mut signatures: Vec<Signature> = Vec::new();
+        let mut entries: Vec<Entry> = Vec::new();
+
+        for entry in mempool_entries {
+            let signature = Signature::from_bytes(&entry.signature)?;
+            signatures.push(signature);
+            entries.push(entry.into());
+        }
+
+        let signature = bls_signatures::aggregate(&signatures)?.as_bytes();
+
+        let block = Block::new_with_hash_and_signature(
+            previous_hash,
+            height,
+            entries,
+            nonce,
+            timestamp,
+            difficulty_target,
+            entry_difficulty_multiplier,
+            max_allowed_entry_difficulty,
+            miner_address,
+            signature,
+            hash,
+        )?;
 
         Ok(block)
     }
@@ -127,7 +206,7 @@ impl Block {
         if entry_difficulty > self.header.max_allowed_entry_difficulty {
             entry_difficulty = self.header.max_allowed_entry_difficulty
         }
-        
+
         Ok(entry_difficulty)
     }
 
@@ -135,16 +214,16 @@ impl Block {
         let miner_difficulty = self.miner_difficulty();
         let entry_difficulty = self.entry_difficulty()?;
 
-        Ok(miner_difficulty as f32 + (entry_difficulty * self.header.entry_difficulty_multiplier))
+        Ok(miner_difficulty as f32
+            + (entry_difficulty * self.header.entry_difficulty_multiplier))
     }
 
-    pub fn calc_hash(&self) -> Result<[u8; 32], BlockError> {
-        let key = self.header.concat();
-
-        let flags = RandomxFlags::default();
-        let cache = RandomxCache::new(flags, &key)?;
-        let vm = RandomxVm::new(flags, &cache)?;
-        let hash = vm.hash(&self.randomx_input);
+    pub fn calc_hash(
+        &self,
+        randomx_cache: &RandomxCache,
+    ) -> Result<[u8; 32], BlockError> {
+        let vm = RandomxVm::new(*RANDOMX_FLAGS, &randomx_cache)?;
+        let hash = vm.hash(&self.header.concat());
 
         Ok(hash)
     }
@@ -158,28 +237,22 @@ impl Block {
 
         for entry in &self.entries {
             if let Some(public_key_bytes) = &entry.public_key {
-
                 let public_key = PublicKey::from_bytes(&public_key_bytes)?;
                 public_keys.push(public_key);
-
             } else if let Some(public_key_index) = &entry.public_key_index {
-
                 let public_key_index = public_key_index.to_le_bytes();
 
                 let key =
                     KeyType::make_key(KeyType::PublicKey, &public_key_index);
 
-                let public_key_bytes = db.get(&key)?.ok_or(
-                    BlockError::new(BlockErrorKind::NoPublicKeyFound),
-                )?;
+                let public_key_bytes = db
+                    .get(&key)?
+                    .ok_or(BlockError::new(BlockErrorKind::NoPublicKeyFound))?;
 
                 let public_key = PublicKey::from_bytes(&public_key_bytes)?;
                 public_keys.push(public_key);
-
             } else {
-                return Err(BlockError::new(
-                    BlockErrorKind::NoPublicKeyFound
-                ));
+                return Err(BlockError::new(BlockErrorKind::NoPublicKeyFound));
             }
 
             let message = entry.to_bytes()?;
@@ -215,8 +288,7 @@ impl Block {
         let block_with_serialized_entries = BlockWithSerializedEntries {
             entries_bytes,
             header: self.header.clone(),
-            randomx_input: self.randomx_input.clone(),
-            hash: self.hash.clone()
+            hash: self.hash.clone(),
         };
 
         let block_bytes = rmp_serde::to_vec(&block_with_serialized_entries)?;
@@ -224,7 +296,8 @@ impl Block {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, BlockError> {
-        let block_with_serialized_entries: BlockWithSerializedEntries = rmp_serde::from_slice(bytes)?;
+        let block_with_serialized_entries: BlockWithSerializedEntries =
+            rmp_serde::from_slice(bytes)?;
 
         let mut entries: Vec<Entry> = Vec::new();
 
@@ -233,17 +306,22 @@ impl Block {
             entries.push(entry);
         }
 
-        let block = Block::new_with_signature(
+        let block = Block::new_with_hash_and_signature(
             block_with_serialized_entries.header.previous_hash,
             block_with_serialized_entries.header.height,
             entries,
-            block_with_serialized_entries.randomx_input,
+            block_with_serialized_entries.header.nonce,
             block_with_serialized_entries.header.timestamp,
             block_with_serialized_entries.header.difficulty_target,
-            block_with_serialized_entries.header.entry_difficulty_multiplier,
-            block_with_serialized_entries.header.max_allowed_entry_difficulty,
+            block_with_serialized_entries
+                .header
+                .entry_difficulty_multiplier,
+            block_with_serialized_entries
+                .header
+                .max_allowed_entry_difficulty,
             block_with_serialized_entries.header.miner_address,
             block_with_serialized_entries.header.signature,
+            block_with_serialized_entries.hash,
         )?;
 
         Ok(block)
@@ -256,7 +334,6 @@ impl Block {
 struct BlockWithSerializedEntries {
     pub entries_bytes: Vec<Vec<u8>>,
     pub header: BlockHeader,
-    pub randomx_input: Vec<u8>,
     pub hash: [u8; 32],
 }
 
@@ -272,6 +349,7 @@ pub struct BlockHeader {
     pub max_allowed_entry_difficulty: f32,
     pub miner_address: [u8; 32],
     pub signature: Vec<u8>, // serde doesn't suport arrays past length 32, so vec is used
+    pub nonce: Vec<u8>,
 }
 
 impl BlockHeader {
@@ -286,6 +364,7 @@ impl BlockHeader {
         max_allowed_entry_difficulty: f32,
         miner_address: [u8; 32],
         signature: Vec<u8>,
+        nonce: Vec<u8>,
     ) -> Self {
         BlockHeader {
             previous_hash,
@@ -298,6 +377,7 @@ impl BlockHeader {
             max_allowed_entry_difficulty,
             miner_address,
             signature,
+            nonce,
         }
     }
 
@@ -308,8 +388,12 @@ impl BlockHeader {
             self.merkle_root.to_vec(),
             self.timestamp.to_le_bytes().into(),
             self.difficulty_target.to_le_bytes().into(),
+            self.entry_difficulty.to_le_bytes().into(),
+            self.entry_difficulty_multiplier.to_le_bytes().into(),
+            self.max_allowed_entry_difficulty.to_le_bytes().into(),
             self.miner_address.to_vec(),
             self.signature.clone(),
+            self.nonce.clone(),
         ]
         .concat()
     }
@@ -469,7 +553,7 @@ impl From<MempoolEntry> for Entry {
 
 // An entry with a signature. Signatures aren't aggregated until they are added to a block, so
 // until then they must be a MempoolEntry.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct MempoolEntry {
     entry: Entry,
     signature: Vec<u8>,
@@ -477,10 +561,7 @@ pub struct MempoolEntry {
 
 impl MempoolEntry {
     pub fn new(entry: Entry, signature: Vec<u8>) -> Self {
-        Self {
-            entry,
-            signature,
-        }
+        Self { entry, signature }
     }
 }
 

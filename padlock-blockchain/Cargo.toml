@@ -14,6 +14,8 @@ merkle_tree = { path = "merkle_tree", features = ["serde_support"] }
 serde = "^1.0"
 rmp-serde = "^0.15"
 rocksdb = "^0.16"
+lazy_static = "1.4.0"
 
 [dev-dependencies]
 rand = "^0.7"
+hex_fmt = "0.3.0"
