@@ -566,7 +566,7 @@ impl MempoolEntry {
 }
 
 #[test]
-fn serialization_test() -> Result<(), Box<dyn Error>> {
+fn block_serialization_test() -> Result<(), Box<dyn Error>> {
     let mut entry = Entry::default();
     let bytes = entry.to_bytes()?;
     let new_entry = Entry::from_bytes(&bytes)?;

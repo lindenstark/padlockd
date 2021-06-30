@@ -13,11 +13,12 @@ use randomx_bindings::{RandomxCache, RandomxVm};
 
 // 3 blocks should be the minimum testing amount. If it is less than that, there is no difficulty
 // adjustment
-const TEST_BLOCKS_TO_MINE: usize = 10000;
-const START_DIFFICULTY: f32 = 1024f32;
+const TEST_BLOCKS_TO_MINE: usize = 3;
+const START_DIFFICULTY: f32 = 4096f32;
 
 #[test]
-fn add_one_block() -> Result<(), Box<dyn Error>> {
+/// Mines one block and adds it to the blockchain
+fn add_block() -> Result<(), Box<dyn Error>> {
     let mut blockchain = make_blockchain("./add_one_block_test")?;
 
     blockchain.add_block(mine_block(&blockchain, &blockchain.randomx_cache)?)?;
